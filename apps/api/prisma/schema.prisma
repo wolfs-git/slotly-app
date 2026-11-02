@@ -1,0 +1,209 @@
+generator client {
+  provider     = "prisma-client"
+  output       = "../src/generated/prisma"
+  moduleFormat = "esm"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+enum Role {
+  OWNER
+  STAFF
+}
+
+enum BookingStatus {
+  PENDING
+  CONFIRMED
+  CANCELLED
+  COMPLETED
+}
+
+model Business {
+  id       String @id @default(uuid(7)) @db.Uuid
+  name     String
+  slug     String @unique
+  timezone String
+  address  String
+  phone    String
+
+  memberships      Membership[]
+  staff            Staff[]
+  services         Service[]
+  staffServices    StaffService[]
+  workingHours     WorkingHours[]
+  timeOffs         TimeOff[]
+  customers        Customer[]
+  bookings         Booking[]
+  notificationLogs NotificationLog[]
+
+  @@map("businesses")
+}
+
+// Глобальный аккаунт без businessId: один человек может работать в нескольких бизнесах через Membership
+model User {
+  id           String @id @default(uuid(7)) @db.Uuid
+  email        String @unique
+  passwordHash String @map("password_hash")
+
+  memberships Membership[]
+  staff       Staff[]
+
+  @@map("users")
+}
+
+model Membership {
+  userId     String @map("user_id") @db.Uuid
+  businessId String @map("business_id") @db.Uuid
+  role       Role
+
+  user     User     @relation(fields: [userId], references: [id])
+  business Business @relation(fields: [businessId], references: [id])
+
+  @@id([userId, businessId])
+  @@index([businessId])
+  @@map("memberships")
+}
+
+model Staff {
+  id         String  @id @default(uuid(7)) @db.Uuid
+  businessId String  @map("business_id") @db.Uuid
+  userId     String? @map("user_id") @db.Uuid
+  name       String
+
+  business     Business       @relation(fields: [businessId], references: [id])
+  user         User?          @relation(fields: [userId], references: [id])
+  services     StaffService[]
+  workingHours WorkingHours[]
+  timeOffs     TimeOff[]
+  bookings     Booking[]
+
+  @@unique([businessId, userId])
+  @@map("staff")
+}
+
+model Service {
+  id          String  @id @default(uuid(7)) @db.Uuid
+  businessId  String  @map("business_id") @db.Uuid
+  name        String
+  durationMin Int     @map("duration_min")
+  price       Decimal @db.Decimal(10, 2)
+  bufferMin   Int     @default(0) @map("buffer_min")
+
+  business Business       @relation(fields: [businessId], references: [id])
+  staff    StaffService[]
+  bookings Booking[]
+
+  @@index([businessId])
+  @@map("services")
+}
+
+// price и durationMin переопределяют значения из Service для конкретного мастера; null = как в Service
+model StaffService {
+  staffId     String   @map("staff_id") @db.Uuid
+  serviceId   String   @map("service_id") @db.Uuid
+  businessId  String   @map("business_id") @db.Uuid
+  price       Decimal? @db.Decimal(10, 2)
+  durationMin Int?     @map("duration_min")
+
+  staff    Staff    @relation(fields: [staffId], references: [id])
+  service  Service  @relation(fields: [serviceId], references: [id])
+  business Business @relation(fields: [businessId], references: [id])
+
+  @@id([staffId, serviceId])
+  @@index([businessId])
+  @@index([serviceId])
+  @@map("staff_services")
+}
+
+// start/end: локальное время бизнеса, а не UTC, иначе "с 9 до 18" съедет при переходе на летнее время
+model WorkingHours {
+  id         String   @id @default(uuid(7)) @db.Uuid
+  businessId String   @map("business_id") @db.Uuid
+  staffId    String   @map("staff_id") @db.Uuid
+  weekday    Int
+  start      DateTime @db.Time(0)
+  end        DateTime @db.Time(0)
+
+  business Business @relation(fields: [businessId], references: [id])
+  staff    Staff    @relation(fields: [staffId], references: [id])
+
+  @@index([businessId])
+  @@index([staffId, weekday])
+  @@map("working_hours")
+}
+
+model TimeOff {
+  id         String   @id @default(uuid(7)) @db.Uuid
+  businessId String   @map("business_id") @db.Uuid
+  staffId    String   @map("staff_id") @db.Uuid
+  startsAt   DateTime @map("starts_at") @db.Timestamptz
+  endsAt     DateTime @map("ends_at") @db.Timestamptz
+  reason     String?
+
+  business Business @relation(fields: [businessId], references: [id])
+  staff    Staff    @relation(fields: [staffId], references: [id])
+
+  @@index([businessId])
+  @@index([staffId, startsAt])
+  @@map("time_offs")
+}
+
+model Customer {
+  id             String  @id @default(uuid(7)) @db.Uuid
+  businessId     String  @map("business_id") @db.Uuid
+  name           String
+  phone          String
+  telegramChatId String? @map("telegram_chat_id")
+
+  business Business  @relation(fields: [businessId], references: [id])
+  bookings Booking[]
+
+  @@unique([businessId, phone])
+  @@map("customers")
+}
+
+// Пересечения по мастеру запрещены EXCLUDE-ограничением в миграции booking_no_overlap
+model Booking {
+  id          String        @id @default(uuid(7)) @db.Uuid
+  businessId  String        @map("business_id") @db.Uuid
+  staffId     String        @map("staff_id") @db.Uuid
+  serviceId   String        @map("service_id") @db.Uuid
+  customerId  String        @map("customer_id") @db.Uuid
+  startsAt    DateTime      @map("starts_at") @db.Timestamptz
+  endsAt      DateTime      @map("ends_at") @db.Timestamptz
+  status      BookingStatus @default(PENDING)
+  // Цена на момент записи: изменение прайса не должно менять историю и аналитику
+  price       Decimal       @db.Decimal(10, 2)
+  cancelToken String        @unique @map("cancel_token")
+
+  business         Business          @relation(fields: [businessId], references: [id])
+  staff            Staff             @relation(fields: [staffId], references: [id])
+  service          Service           @relation(fields: [serviceId], references: [id])
+  customer         Customer          @relation(fields: [customerId], references: [id])
+  notificationLogs NotificationLog[]
+
+  @@index([businessId, startsAt])
+  @@index([serviceId])
+  @@index([customerId])
+  @@map("bookings")
+}
+
+// type, channel, status пока строки: набор значений определится на этапе уведомлений
+model NotificationLog {
+  id         String    @id @default(uuid(7)) @db.Uuid
+  businessId String    @map("business_id") @db.Uuid
+  bookingId  String    @map("booking_id") @db.Uuid
+  type       String
+  channel    String
+  sentAt     DateTime? @map("sent_at") @db.Timestamptz
+  status     String
+
+  business Business @relation(fields: [businessId], references: [id])
+  booking  Booking  @relation(fields: [bookingId], references: [id])
+
+  @@index([businessId])
+  @@index([bookingId])
+  @@map("notification_logs")
+}

@@ -1,0 +1,11 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "slotly-dev",
+      "runtimeExecutable": "env",
+      "runtimeArgs": ["PORT=3000", "pnpm", "dev"],
+      "port": 5173
+    }
+  ]
+}
